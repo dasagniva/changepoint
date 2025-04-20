@@ -1,0 +1,210 @@
+##########################################
+################ DeCAFS ################
+###########################################
+require(TSA); require(tseries)
+con <- url("http://quote.yahoo.com")
+if(!inherits(try(open(con), silent = TRUE), "try-error")) {
+  close(con)
+  bitcoin <- get.hist.quote(instrument = "BTC-USD", start = "2018-01-01",
+                            end = "2023-12-31", quote = "Adj")
+}
+
+bitcoin<-as.ts(bitcoin)
+plot(bitcoin, main = "Bitcoin", lwd = 1, type = "l", cex = 1, ylim = c(0, 70000))
+
+
+log(bitcoin)
+log_return <- diff(log(bitcoin))
+o <- rep(0, times = length(log_return))
+plot(as.numeric(log_return), ylab = "Log Return", 
+     type = "l", main = "Bitcoin Log Return Data")
+lines(o, col = "darkred", lwd = 4, lty = 2, ljoin = 2)
+
+###########################
+log_price <- log(bitcoin)
+oo <- rep(mean(log_price), times = length(log_price))
+plot(as.numeric(log_price), ylab = "Log Price", 
+     type = "l", main = "Bitcoin Log Price Data")
+lines(oo, col = "darkred", lwd = 4, lty = 2, ljoin = 2)
+
+
+
+###############################################
+
+library(DeCAFS)
+
+rr <- DeCAFS::DeCAFS(log_price)
+
+plot(as.vector(log_price), type = "l", lwd = 3, lty = "solid", 
+     xlab = "Time", ylab = "Logartihm of Price (in log $)", col = "darkgrey")
+abline(v = rr$changepoints, lty = "dotted", col = "black")
+lines(rr$signal, col = "darkred", lty = "solid", lwd = 2)
+
+
+#install.packages("EnvCpt", dep = T)
+library(EnvCpt)
+fit_envcpt <-  envcpt(as.vector(log_price))  
+cgpts_cpt <-fit_envcpt$meancpt@cpts
+means_cpt <- fit_envcpt$meancpt@param.est$mean
+
+plot(as.vector(log_price), type = "l", lwd = 2, lty = "solid", 
+     xlab = "Time", ylab = "Logartihm of Price (in log $)", col = "darkgrey")
+abline(v = cgpts_cpt, lty = 3, lwd = 1, col = "black")
+segments(x0 = c(0, cgpts_cpt[-87]), 
+         y0 = means_cpt, 
+         x1 = cgpts_cpt, 
+         y1 = means_cpt,
+         col = "darkred", lwd = 3)
+
+
+#install.packages("segmented", dep = T)
+library(segmented)
+x <- 1:length(log_price)
+fit_lm <- lm(as.vector(log_price) ~ 1 + x)
+fit_segmented = segmented(fit_lm, seg.Z = ~ x, npsi = 25)
+
+
+plot(as.vector(log_price), type = "l", lwd = 3, lty = "solid", 
+     xlab = "Time", ylab = "Logartihm of Price (in log $)", col = "darkgrey")
+abline(v = fit_segmented$psi, lty = 3, lwd = 1, col = "black")
+lines(fit_segmented$fitted.values, col = "darkred", lty = "solid", lwd = 2)
+
+
+#install.packages("cpm")
+library(cpm)
+fit_cpm <- processStream(as.vector(log_price), cpmType = "Student")  # Multiple change points
+cgpts_cpm <- fit_cpm$changePoints
+y <- vector("numeric")
+y[1] <- mean(log_price[1:(cgpts_cpm[1]-1)])
+for (i in 1:(length(cgpts_cpm)-1)) {
+  y[i+1] <- mean(log_price[cgpts_cpm[i]:(cgpts_cpm[i+1]-1)])
+}
+plot(as.vector(log_price), type = "l", lwd = 2, lty = "solid", 
+     xlab = "Time", ylab = "Logartihm of Price (in log $)", col = "darkgrey")
+abline(v = fit_cpm$changePoints, lty = 3, lwd = 1, col = "black")
+segments(x0 = c(0, cgpts_cpm[-154]), 
+         y0 = y, 
+         x1 = cgpts_cpm, 
+         y1 = y,
+         col = "darkred", lwd = 3)
+
+
+
+library(changepoint)
+fit_changepoint = cpt.mean(as.vector(log_price))
+
+# Return estimates
+c(ints = param.est(fit_changepoint)$mean,
+  cp = cpts(fit_changepoint))
+
+plot(as.vector(log_price), type = "l", lwd = 2, lty = "solid", 
+     xlab = "Time", ylab = "Logartihm of Price (in log $)", col = "darkgrey")
+abline(v = 1045, lty = 3, lwd = 1, col = "black")
+segments(x0 = c(0, 1045),
+         y0 = param.est(fit_changepoint)$mean,
+         x1 = c(1045, 2191),
+         y1 = param.est(fit_changepoint)$mean,
+         col = "darkred", lwd = 3)
+
+
+install.packages("bcp", dep = T)
+library(bcp)
+fit_bcp = bcp(as.vector(log_price))
+plot(fit_bcp)
+
+cgpts_bcp <- as.vector(na.omit(c(1:2191)[fit_bcp$posterior.prob >= 0.8]))
+plot(as.vector(log_price), type = "l", lwd = 2, lty = "solid", 
+     xlab = "Time", ylab = "Logartihm of Price (in log $)", col = "darkgrey")
+abline(v = cgpts_bcp, lty = 3, lwd = 1, col = "black")
+lines(fit_bcp$posterior.mean, lty = "solid", lwd = 2, col = "darkred")
+
+#install.packages("devtools", dep = T)
+devtools::install_github("guillemr/robust-fpop")
+
+require(robseg)
+knitr::opts_chunk$set(fig.width=11, fig.height=7) 
+
+x.data <- as.vector(log_price)
+est.sd <- mad(diff(x.data)/sqrt(2))
+
+
+## run dynamic programming (Biweight Loss)
+## lambda set at 7logLik
+res.ou <- Rob_seg.std(x = x.data/est.sd,  
+                      loss = "Outlier", 
+                      lambda = 7*log(length(x.data)), 
+                      lthreshold=3)
+## estimated changepoints 
+cpt1 <- res.ou$t.est[-length(res.ou$t.est)]
+
+
+plot(as.vector(log_price), type = "l", lwd = 2, lty = "solid", 
+     xlab = "Time", ylab = "Logartihm of Price (in log $)", col = "darkgrey")
+lines(res.ou$smt * est.sd, col="darkred", lty = "dotted", lwd=2)
+abline(v=cpt1, lty="dotted", col="darkgrey")
+
+## run dynamic programming (Huber Loss)
+#lambda recalibrated to 7logLik
+res.hu <- Rob_seg.std(x = x.data/est.sd,  
+                      loss = "Huber", 
+                      lambda = 7*log(length(x.data)), 
+                      lthreshold = 1.345)
+## estimated changepoints 
+cpt2 <- res.hu$t.est[-length(res.hu$t.est)]
+
+## simple ploting of changes and smoothed profile
+plot(as.vector(log_price), type = "l", lwd = 2, lty = "solid", 
+     xlab = "Time", ylab = "Logartihm of Price (in log $)", col = "darkgrey")
+lines(res.hu$smt * est.sd, col="darkred", lty = "dotted", lwd=2)
+abline(v=cpt2, lty="dotted", col="darkgrey")
+
+
+## run dynamic programming (L1 loss)
+## lambda set at 7logLik
+res.l1 <- Rob_seg.std(x = x.data/est.sd,  
+                      loss = "L1", 
+                      lambda = 7*log(length(x.data)))
+
+## estimated changepoints 
+cpt3 <- res.l1$t.est[-length(res.l1$t.est)]
+
+## simple ploting of changes and smoothed profile
+plot(as.vector(log_price), type = "l", lwd = 2, lty = "solid", 
+     xlab = "Time", ylab = "Logartihm of Price (in log $)", col = "darkgrey")
+lines(res.l1$smt * est.sd, col="darkred", lty = "dotted", lwd=2)
+abline(v=cpt3, lty="dotted", col="darkgrey")
+
+## run dynamic programming (L2 loss)
+## lambda set at 7logLik
+res.l2 <- Rob_seg.std(x = x.data/est.sd,  
+                      loss = "L2", 
+                      lambda=7*log(length(x.data)))
+
+## estimated changepoints 
+cpt4 <- res.l2$t.est[-length(res.l2$t.est)]
+
+## simple ploting of changes and smoothed profile
+plot(as.vector(log_price), type = "l", lwd = 2, lty = "solid", 
+     xlab = "Time", ylab = "Logartihm of Price (in log $)", col = "darkgrey")
+lines(res.l2$smt * est.sd, col="darkred", lty = "dotted", lwd=2)
+abline(v=cpt4, lty="dotted", col="darkgrey")
+
+
+par(mfrow = c(1,1))
+
+#install.packages("stepR", dep = T)
+library(stepR)
+fit <- stepFit(x.data, family = "hsmuce", jumpint = TRUE, confband = TRUE)
+
+cb <-confband(fit)
+cpt <-c(1:nrow(cb))[cb$upper - cb$lower > 0.8]
+
+plot(x.data, type = "l", lty = "solid", lwd = 3, , col="darkgrey",
+     main = "H-SMUCE", ylab = "log Price (in $)")
+lines(fit, col="darkred", lty = "solid", lwd=2)
+abline(v=cpt, lty="dotted")
+
+
+######################################################################
+######################## Outlier Scoring #############################
+######################################################################
