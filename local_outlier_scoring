@@ -1,0 +1,129 @@
+# Load required libraries
+library(stochvol)    # For stochastic volatility modeling
+library(ggplot2)     # For visualization
+library(dplyr)       # For data manipulation
+
+# Function to compute local outlier scores using ABCO framework
+compute_outlier_scores <- function(y, D = 1, n_iter = 1000, burnin = 200) {
+  # Input:
+  # y: univariate time series (vector)
+  # D: order of differencing for trend component (default = 1)
+  # n_iter: number of MCMC iterations
+  # burnin: number of burn-in iterations
+  
+  T <- length(y)
+  
+  # Initialize parameters
+  beta <- rep(mean(y), T)  # Initial trend estimate
+  zeta <- rep(0, T)        # Outlier component
+  lambda_zeta <- rep(1, T) # Local shrinkage for outliers
+  tau_zeta <- 1            # Global shrinkage for outliers
+  eta_zeta <- rep(1, T)    # Additional shrinkage term for horseshoe+
+  
+  sigma_et <- rep(sd(y), T) # Observation noise SD
+  mu_epsilon <- log(var(y))
+  phi_epsilon <- 0.9        # Persistence in log-volatility
+  
+  # Storage for MCMC samples
+  lambda_zeta_samples <- matrix(NA, nrow = n_iter - burnin, ncol = T)
+  sigma_et_samples <- matrix(NA, nrow = n_iter - burnin, ncol = T)
+  
+  # MCMC loop
+  for (iter in 1:n_iter) {
+    # 1. Sample outlier component zeta with horseshoe+ prior
+    for (t in 1:T) {
+      # Posterior precision and mean for zeta[t]
+      prec <- 1/lambda_zeta[t]^2 + 1/sigma_et[t]^2
+      mean <- (y[t] - beta[t]) / sigma_et[t]^2 / prec
+      zeta[t] <- rnorm(1, mean, sqrt(1/prec))
+    }
+    
+    # 2. Sample local shrinkage parameters lambda_zeta (horseshoe+)
+    for (t in 1:T) {
+      # Using Makalic & Schmidt (2016) representation
+      a_zeta <- 1
+      b_zeta <- zeta[t]^2 / (2 * tau_zeta^2 * eta_zeta[t]^2) + 1/lambda_zeta[t]^2
+      lambda_zeta[t] <- 1/sqrt(rgamma(1, shape = a_zeta, rate = b_zeta))
+    }
+    
+    # 3. Sample global shrinkage parameter tau_zeta
+    a_tau <- (T + 1)/2
+    b_tau <- sum(zeta^2 / (2 * lambda_zeta^2 * eta_zeta^2)) + 1/tau_zeta^2
+    tau_zeta <- 1/sqrt(rgamma(1, shape = a_tau, rate = b_tau))
+    
+    # 4. Sample additional shrinkage term eta_zeta (horseshoe+)
+    for (t in 1:T) {
+      a_eta <- 1
+      b_eta <- zeta[t]^2 / (2 * tau_zeta^2 * lambda_zeta[t]^2) + 1/eta_zeta[t]^2
+      eta_zeta[t] <- 1/sqrt(rgamma(1, shape = a_eta, rate = b_eta))
+    }
+    
+    # 5. Sample observation noise volatility (stochastic volatility)
+    # Using stochvol package for efficient SV sampling
+    y_resid <- y - beta - zeta
+    sv_fit <- svsample(y_resid, priormu = c(mu_epsilon, 1), 
+                      priorphi = c(20, 1.5), priorsigma = 0.1,
+                      burnin = 0, n.samples = 1)
+    sigma_et <- as.numeric(sv_fit$latent[1,])
+    mu_epsilon <- sv_fit$para[1, "mu"]
+    phi_epsilon <- sv_fit$para[1, "phi"]
+    
+    # 6. Sample trend component beta (simplified version)
+    # In practice, should use state-space sampler with threshold SV
+    # Here we use a simplified random walk with variance estimated from data
+    beta_diff <- diff(beta, differences = D)
+    beta_var <- var(beta_diff)
+    beta <- cumsum(c(beta[1], rnorm(T-1, 0, sqrt(beta_var))))
+    
+    # Store samples after burn-in
+    if (iter > burnin) {
+      lambda_zeta_samples[iter - burnin, ] <- lambda_zeta^2
+      sigma_et_samples[iter - burnin, ] <- sigma_et^2
+    }
+  }
+  
+  # Compute outlier scores as posterior means
+  outlier_scores <- rowMeans(lambda_zeta_samples / (lambda_zeta_samples + sigma_et_samples))
+  
+  return(outlier_scores)
+}
+
+# Example usage with simulated data
+set.seed(123)
+n <- 200
+time_series <- c(
+  rnorm(n/2, mean = 0, sd = 1),
+  rnorm(n/2, mean = 5, sd = 1.5)
+)
+
+# Add some outliers
+time_series[c(50, 100, 150)] <- time_series[c(50, 100, 150)] + 10
+
+# Compute outlier scores
+scores <- compute_outlier_scores(time_series, n_iter = 2000, burnin = 500)
+
+# Create results data frame
+results <- data.frame(
+  Time = 1:n,
+  Value = time_series,
+  OutlierScore = scores,
+  IsOutlier = scores > 0.9  # Using 0.9 as threshold
+)
+
+# Plot results
+ggplot(results, aes(x = Time, y = Value)) +
+  geom_line(aes(color = "Time Series")) +
+  geom_point(data = filter(results, IsOutlier), 
+             aes(color = "Detected Outliers"), size = 3) +
+  geom_line(aes(y = OutlierScore*max(Value), color = "Outlier Score"), 
+            linetype = "dashed") +
+  scale_y_continuous(
+    "Time Series Value",
+    sec.axis = sec_axis(~./max(results$Value), name = "Outlier Score")
+  ) +
+  scale_color_manual(values = c("Time Series" = "black", 
+                               "Detected Outliers" = "red",
+                               "Outlier Score" = "blue")) +
+  labs(title = "Time Series with Outlier Detection",
+       color = "Legend") +
+  theme_minimal()
